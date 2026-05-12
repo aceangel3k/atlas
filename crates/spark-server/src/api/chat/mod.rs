@@ -103,20 +103,18 @@ pub(crate) async fn chat_completions_inner(
     // Inject parser-specific behavioral system prompt when tools are active.
     // Each ToolCallParser defines guardrails (e.g. "emit <tool_call> immediately,
     // do not narrate") that the Jinja chat template alone does not enforce.
-    if tools_active {
-        if let Some(ref parser) = state.tool_call_parser {
-            let default_choice = crate::tool_parser::ToolChoice::Mode("auto".to_string());
-            let tool_choice = req.tool_choice.as_ref().unwrap_or(&default_choice);
-            let tool_prompt =
-                parser.system_prompt(req.tools.as_deref().unwrap_or(&[]), tool_choice);
-            if let Some(first) = req.messages.first_mut().filter(|m| m.role == "system") {
-                first.content.text = format!("{}\n\n{}", tool_prompt, first.content.text);
-            } else {
-                req.messages.insert(
-                    0,
-                    crate::openai::IncomingMessage::synthetic_system(tool_prompt),
-                );
-            }
+    if tools_active && let Some(ref parser) = state.tool_call_parser {
+        let default_choice = crate::tool_parser::ToolChoice::Mode("auto".to_string());
+        let tool_choice = req.tool_choice.as_ref().unwrap_or(&default_choice);
+        let tool_prompt =
+            parser.system_prompt(req.tools.as_deref().unwrap_or(&[]), tool_choice);
+        if let Some(first) = req.messages.first_mut().filter(|m| m.role == "system") {
+            first.content.text = format!("{}\n\n{}", tool_prompt, first.content.text);
+        } else {
+            req.messages.insert(
+                0,
+                crate::openai::IncomingMessage::synthetic_system(tool_prompt),
+            );
         }
     }
 
