@@ -7,7 +7,7 @@ use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::WeightStore;
 
 use crate::layer::TransformerLayer;
-use crate::weight_map::{DenseWeight, dense, dense_auto, quantize_to_nvfp4};
+use crate::weight_map::{dense, dense_auto, quantize_to_nvfp4};
 
 pub fn load_all_layers(
     store: &WeightStore,

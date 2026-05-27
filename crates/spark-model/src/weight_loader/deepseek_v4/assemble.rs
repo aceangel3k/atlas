@@ -12,7 +12,7 @@ use crate::layers::FfnComponent;
 use crate::layers::MoeLayer;
 use crate::layers::qwen3_attention::{MlaWeights, Qwen3AttentionLayer};
 use crate::weight_map::{
-    AttentionWeights, DenseWeight, Nvfp4Variant, QuantizeCtx, QuantizedWeight,
+    AttentionWeights, DenseWeight, QuantizeCtx, QuantizedWeight,
     detect_nvfp4_variant, load_moe, quantize_to_nvfp4,
 };
 
