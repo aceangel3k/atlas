@@ -176,6 +176,11 @@ pub struct ModelConfig {
     /// Query latent dimension for low-rank Q projection. 0 = standard Q.
     #[serde(default)]
     pub q_lora_rank: usize,
+    /// Output projection latent dimension for low-rank O projection.
+    /// DeepSeek-V4 uses o_lora_rank to compress the output projection.
+    /// 0 = standard O (no low-rank compression).
+    #[serde(default)]
+    pub o_lora_rank: usize,
     /// Non-rotary portion of Q/K per head (NoPE component).
     #[serde(default)]
     pub qk_nope_head_dim: usize,
@@ -325,6 +330,17 @@ pub struct ModelConfig {
     /// is what the drafter's `fc` projection expects.
     #[serde(default)]
     pub dflash_capture_layers: Vec<usize>,
+
+    // ── DeepSeek-V4 specific ──
+    /// Per-layer compression ratios for hybrid attention (CSA/HCA).
+    /// 0 = full attention, >0 = compressed attention with that ratio.
+    /// Length equals num_hidden_layers. Empty = all layers full attention.
+    #[serde(default)]
+    pub compress_ratios: Vec<usize>,
+    /// Number of hash-based attention layers (DeepSeek-V4 HCA).
+    /// 0 = no hash layers.
+    #[serde(default)]
+    pub num_hash_layers: usize,
 }
 
 /// Advertised weight-quantization layout, as declared in the HF

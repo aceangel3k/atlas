@@ -1,0 +1,77 @@
+[model]
+name = "deepseek-v4-flash"
+hf_id = "deepseek-ai/DeepSeek-V4-Flash"
+params = "284B"
+active_params = "13B"
+architecture = "MLA + MoE + CSA/HCA hybrid attention"
+
+layers_total = 43
+layers_full_attention = 43
+layer_pattern = "all full attention (fallback: CSA/HCA ignored)"
+
+moe_experts = 256
+moe_topk = 6
+moe_intermediate = 2048
+shared_expert_intermediate = 2048
+
+hidden_dim = 4096
+head_dim = 512
+q_heads = 64
+kv_heads = 1
+
+q_lora_rank = 1024
+o_lora_rank = 1024
+qk_rope_head_dim = 64
+vocab_size = 129280
+max_position_embeddings = 1048576
+rope_theta = 10000
+
+mtp_layers = 1
+mtp_type = "multi_module"
+
+# DeepSeek recommends temperature=1.0, top_p=1.0 for local deployment.
+# For the Think Max reasoning mode, recommend context >= 384K tokens.
+[sampling.thinking_text]
+temperature = 1.0
+top_p = 1.0
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+
+[sampling.thinking_coding]
+temperature = 1.0
+top_p = 1.0
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+
+[sampling.non_thinking]
+temperature = 1.0
+top_p = 1.0
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+
+[sampling.tools]
+temperature = 1.0
+top_p = 1.0
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+
+[behavior]
+thinking_in_tools = true
+max_thinking_budget = 512
+thinking_default = true
+# BF16 KV cache default for MLA models (FP8 E4M3 range may be insufficient
+# for latent space values).
+default_kv_dtype = "bf16"
+fp8_kv_calibration_tokens = 256
+enable_loop_watchdog = false
+
+[[model_types]]
+model_type = "deepseek_v4"
+hidden_size = 4096
+
+[kernel]
+moe_gate_shmem_bytes = 8192   # hidden_dim(4096) * sizeof(bf16)
