@@ -1,7 +1,7 @@
 [build]
-# DeepSeek-V4-Flash: head_dim=512, MLA latent HDIM=576.
-# Same HDIM as Mistral for paged decode kernels; MLA-specific files override to 576.
-extra_nvcc_flags = ["--fmad=false", "-DHDIM=512"]
+# DeepSeek-V4-Flash: MLA-specific kernels override HDIM inline.
+# Do NOT pass -DHDIM globally; common paged-decode kernels only support 128/256/320.
+extra_nvcc_flags = ["--fmad=false"]
 
 # Module name overrides — matching Mistral Small 4 for MLA compatibility.
 # Unlisted .cu files use their file stem as the module name.
