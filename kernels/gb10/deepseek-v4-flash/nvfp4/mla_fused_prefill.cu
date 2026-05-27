@@ -54,28 +54,23 @@ extern "C" __global__ void mla_fused_prefill(
     // ═══════════════════════════════════════════════════════════════
     // Step 1: Q absorption — Q_absorbed[512] = Q_nope[448] @ W_UK^T
     // ═══════════════════════════════════════════════════════════════
-    // Each of 256 threads produces 1 output element of Q_absorbed
-    // (for tid < 256, which covers half of kv_lora=512 outputs)
-    // TODO: retune thread mapping for kv_lora=512 (currently only first 256 written)
+    // 256 threads cover all 512 outputs via strided loop (tid, tid+256).
 
-    // Load Q_nope[64] into registers (shared across all threads via L1)
+    // Load Q_nope[448] into registers (shared across all threads via L1)
     const __nv_bfloat16* q_nope_ptr = q_full + (unsigned long long)q_pos * nq * hd + head * hd;
     // W_UK for this head: [kv_lora, nope] at offset head * kv_lora * nope
     const __nv_bfloat16* w_uk_head = w_uk + (unsigned long long)head * kv_lora * nope;
 
-    float q_absorbed_val = 0.0f;
-    if (tid < kv_lora) {
-        // Dot product: W_UK[tid, :] · Q_nope[:]
-        const __nv_bfloat16* w_row = w_uk_head + (unsigned long long)tid * nope;
+    __shared__ float smem_q[576];  // Q_final = [Q_absorbed(512) | Q_rope(64)]
+
+    for (unsigned int idx = tid; idx < kv_lora; idx += blockDim.x) {
+        // Dot product: W_UK[idx, :] · Q_nope[:]
+        const __nv_bfloat16* w_row = w_uk_head + (unsigned long long)idx * nope;
+        float q_absorbed_val = 0.0f;
         for (unsigned int k = 0; k < nope; k++) {
             q_absorbed_val += __bfloat162float(w_row[k]) * __bfloat162float(q_nope_ptr[k]);
         }
-    }
-
-    // Store Q_absorbed in shared memory for attention step
-    __shared__ float smem_q[576];  // Q_final = [Q_absorbed(512) | Q_rope(64)]
-    if (tid < kv_lora) {
-        smem_q[tid] = q_absorbed_val;
+        smem_q[idx] = q_absorbed_val;
     }
 
     // Load Q_rope into smem
@@ -92,15 +87,18 @@ extern "C" __global__ void mla_fused_prefill(
     // Use head==0 to write, other heads skip.
     if (head == 0 && k_cache_out != 0) {
         // K_cache = [kv_latent | k_rope], V_cache = [kv_latent | zeros]
-        if (tid < kv_lora) {
-            __nv_bfloat16 lat_val = kv_latent[q_pos * kv_lora + tid];
-            k_cache_out[q_pos * mla_cache_dim + tid] = lat_val;
-            v_cache_out[q_pos * mla_cache_dim + tid] = lat_val;
-        } else if (tid < mla_cache_dim) {
-            unsigned int r = tid - kv_lora;
-            k_cache_out[q_pos * mla_cache_dim + tid] = (r < rope_dim) ?
+        // Latent portion: all 512 dims via strided loop
+        for (unsigned int idx = tid; idx < kv_lora; idx += blockDim.x) {
+            __nv_bfloat16 lat_val = kv_latent[q_pos * kv_lora + idx];
+            k_cache_out[q_pos * mla_cache_dim + idx] = lat_val;
+            v_cache_out[q_pos * mla_cache_dim + idx] = lat_val;
+        }
+        // Rope + zero padding portion: dims 512..575
+        for (unsigned int idx = tid + kv_lora; idx < mla_cache_dim; idx += blockDim.x) {
+            unsigned int r = idx - kv_lora;
+            k_cache_out[q_pos * mla_cache_dim + idx] = (r < rope_dim) ?
                 k_rope[q_pos * rope_dim + r] : __float2bfloat16(0.0f);
-            v_cache_out[q_pos * mla_cache_dim + tid] = __float2bfloat16(0.0f);
+            v_cache_out[q_pos * mla_cache_dim + idx] = __float2bfloat16(0.0f);
         }
     }
 
@@ -109,16 +107,12 @@ extern "C" __global__ void mla_fused_prefill(
     // ═══════════════════════════════════════════════════════════════
     // Q_final is in smem_q[576]. For each KV token, compute dot product.
     // 256 threads collaborate to reduce 576 dims.
-    // Each thread handles ceil(576/256) = 3 dims (with some idle).
-    // TODO: retune dot-product loop for 576 dims vs 320
+    // Latent portion (512) uses strided loop; rope (64) uses first 64 threads.
 
     float m_prev = -FLT_MAX;
     float l_prev = 0.0f;
-    // Accumulate weighted KV latent (only first 256 dims for V extraction)
-    float acc_latent[2] = {0.0f, 0.0f};  // each thread accumulates 1-2 latent dims
-    // Thread tid handles latent dims: tid, tid+256 (if < kv_lora)
-    // But we need to map threads to latent dims for V extraction accumulation.
-    // Simple: tid < 256, each thread accumulates latent[tid] weighted by attention.
+    // Accumulate weighted KV latent — each thread handles 2 dims (tid, tid+256)
+    float acc_latent[2] = {0.0f, 0.0f};
 
     unsigned int kv_end = min(q_pos + 1, seq_len); // causal
     for (unsigned int kv_pos = 0; kv_pos < kv_end; kv_pos++) {
@@ -126,11 +120,11 @@ extern "C" __global__ void mla_fused_prefill(
         const __nv_bfloat16* kv_lat_row = kv_latent + (unsigned long long)kv_pos * kv_lora;
         const __nv_bfloat16* k_rope_row = k_rope + (unsigned long long)kv_pos * rope_dim;
 
-        // Each thread computes partial dot product over ~2 dims
+        // Each thread computes partial dot product over ~3 dims (576/256)
         float dot = 0.0f;
-        // Latent portion: dims 0..511
-        if (tid < kv_lora) {
-            dot += smem_q[tid] * __bfloat162float(kv_lat_row[tid]);
+        // Latent portion: dims 0..511 via strided loop
+        for (unsigned int idx = tid; idx < kv_lora; idx += blockDim.x) {
+            dot += smem_q[idx] * __bfloat162float(kv_lat_row[idx]);
         }
         // Rope portion: dims 512..575 (only first 64 threads)
         if (tid < rope_dim) {
@@ -167,8 +161,11 @@ extern "C" __global__ void mla_fused_prefill(
         float l_new = alpha * l_prev + p;
 
         // Update latent accumulator: acc_latent = alpha * acc_latent + p * kv_latent[kv_pos]
-        if (tid < kv_lora) {
-            acc_latent[0] = alpha * acc_latent[0] + p * __bfloat162float(kv_lat_row[tid]);
+        for (unsigned int i = 0; i < 2; i++) {
+            unsigned int idx = tid + i * blockDim.x;
+            if (idx < kv_lora) {
+                acc_latent[i] = alpha * acc_latent[i] + p * __bfloat162float(kv_lat_row[idx]);
+            }
         }
 
         m_prev = m_new;
@@ -178,8 +175,11 @@ extern "C" __global__ void mla_fused_prefill(
 
     // Normalize by softmax denominator
     float inv_l = (l_prev > 0.0f) ? (1.0f / l_prev) : 0.0f;
-    if (tid < kv_lora) {
-        acc_latent[0] *= inv_l;
+    for (unsigned int i = 0; i < 2; i++) {
+        unsigned int idx = tid + i * blockDim.x;
+        if (idx < kv_lora) {
+            acc_latent[i] *= inv_l;
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -187,21 +187,24 @@ extern "C" __global__ void mla_fused_prefill(
     // ═══════════════════════════════════════════════════════════════
     // Store attn_latent to shared memory for all threads to read
     __shared__ float smem_latent[512];
-    if (tid < kv_lora) {
-        smem_latent[tid] = acc_latent[0];
+    for (unsigned int i = 0; i < 2; i++) {
+        unsigned int idx = tid + i * blockDim.x;
+        if (idx < kv_lora) {
+            smem_latent[idx] = acc_latent[i];
+        }
     }
     __syncthreads();
 
     // W_UV for this head: [v_dim, kv_lora] at offset head * v_dim * kv_lora
     const __nv_bfloat16* w_uv_head = w_uv + (unsigned long long)head * v_dim * kv_lora;
 
-    if (tid < v_dim) {
-        // Dot product: W_UV[tid, :] · attn_latent[:]
-        const __nv_bfloat16* w_row = w_uv_head + (unsigned long long)tid * kv_lora;
+    for (unsigned int idx = tid; idx < v_dim; idx += blockDim.x) {
+        // Dot product: W_UV[idx, :] · attn_latent[:]
+        const __nv_bfloat16* w_row = w_uv_head + (unsigned long long)idx * kv_lora;
         float v_val = 0.0f;
         for (unsigned int l = 0; l < kv_lora; l++) {
             v_val += __bfloat162float(w_row[l]) * smem_latent[l];
         }
-        v_out[(unsigned long long)q_pos * nq * v_dim + head * v_dim + tid] = __float2bfloat16(v_val);
+        v_out[(unsigned long long)q_pos * nq * v_dim + head * v_dim + idx] = __float2bfloat16(v_val);
     }
 }

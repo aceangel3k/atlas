@@ -21,6 +21,8 @@
 #define MLA_BR 16     // query tile size (smaller than 32 to reduce shared mem)
 #define MLA_BC 16     // KV tile size
 
+// NOTE: function name retains "320" for Rust symbol compatibility,
+// but MLA_HDIM=576 makes this the HDIM=576 variant for DeepSeek-V4.
 extern "C" __global__ void mla_prefill_attn_320(
     const __nv_bfloat16* __restrict__ Q,    // [batch, seq_len, num_q_heads, MLA_HDIM]
     const __nv_bfloat16* __restrict__ K,    // [batch, seq_len, 1, MLA_HDIM]
@@ -72,8 +74,8 @@ extern "C" __global__ void mla_prefill_attn_320(
     // Online softmax state
     float m_prev = -FLT_MAX;
     float l_prev = 0.0f;
-    float acc_o[20];  // MLA_HDIM / 16 = 20 output elements per lane
-    for (int i = 0; i < 20; i++) acc_o[i] = 0.0f;
+    float acc_o[36];  // MLA_HDIM / 16 = 36 output elements per lane
+    for (int i = 0; i < 36; i++) acc_o[i] = 0.0f;
 
     // Iterate over KV blocks
     unsigned int kv_end = causal ? min(q_pos + 1, seq_len) : seq_len;
@@ -117,8 +119,8 @@ extern "C" __global__ void mla_prefill_attn_320(
 
             // Update output accumulator: O = alpha * O + p * V[kv_pos]
             const __nv_bfloat16* V_row = V_base + (unsigned long long)kv_pos * kv_stride + kv_head * head_dim;
-            for (int i = 0; i < 20; i++) {
-                unsigned int d = lane * 20 + i;
+            for (int i = 0; i < 36; i++) {
+                unsigned int d = lane * 36 + i;
                 if (d < head_dim) {
                     float v_val = __bfloat162float(V_row[d]);
                     acc_o[i] = alpha * acc_o[i] + p * v_val;
@@ -132,8 +134,8 @@ extern "C" __global__ void mla_prefill_attn_320(
     // Normalize by softmax denominator and write output
     float inv_l = (l_prev > 0.0f) ? (1.0f / l_prev) : 0.0f;
     __nv_bfloat16* O_row = O_base + (unsigned long long)q_pos * q_stride + q_head * head_dim;
-    for (int i = 0; i < 20; i++) {
-        unsigned int d = lane * 20 + i;
+    for (int i = 0; i < 36; i++) {
+        unsigned int d = lane * 36 + i;
         if (d < head_dim) {
             O_row[d] = __float2bfloat16(acc_o[i] * inv_l);
         }
