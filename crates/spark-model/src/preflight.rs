@@ -92,14 +92,17 @@ fn check_embedding_and_head(store: &WeightStore) -> Result<()> {
     // spelling only need to appear as a new suffix here — no enumerated
     // prefix list to maintain.
     const EMBED_SUFFIXES: &[&str] = &[".embed_tokens.weight", ".embeddings.weight"];
-    let has_embed = store
-        .names()
-        .any(|n| n == "tok_embeddings.weight" || EMBED_SUFFIXES.iter().any(|s| n.ends_with(s)));
+    const EMBED_EXACTS: &[&str] = &["tok_embeddings.weight", "embed_tokens.weight"];
+    let has_embed = store.names().any(|n| {
+        EMBED_EXACTS.iter().any(|&e| n == e)
+            || EMBED_SUFFIXES.iter().any(|s| n.ends_with(s))
+    });
     if !has_embed {
+        let sample: Vec<_> = store.names().take(20).collect();
         bail!(
-            "Pre-flight: no embedding tensor found (checked suffixes: \
-             {EMBED_SUFFIXES:?} and bare `tok_embeddings.weight`). \
-             Is this a language-model checkpoint?"
+            "Pre-flight: no embedding tensor found (checked exact: {EMBED_EXACTS:?}, \
+             suffixes: {EMBED_SUFFIXES:?}). Is this a language-model checkpoint? \
+             Sample tensor names: {sample:?}"
         );
     }
     // LM head is optional (tied embeddings skip it). Scan suffixes:

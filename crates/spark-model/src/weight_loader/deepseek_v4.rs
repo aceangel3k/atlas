@@ -9,7 +9,7 @@ mod assemble;
 mod compute;
 mod load_layers;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use atlas_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::kv_cache::KvCacheDtype;
@@ -37,7 +37,11 @@ impl ModelWeightLoader for DeepSeekV4WeightLoader {
     }
 
     fn load_embedding(&self, store: &WeightStore, _config: &ModelConfig) -> Result<DenseWeight> {
-        dense(store, "model.embed_tokens.weight")
+        if let Ok(w) = dense(store, "model.embed_tokens.weight") {
+            return Ok(w);
+        }
+        dense(store, "embed_tokens.weight")
+            .context("DeepSeek-V4: no embedding tensor found (tried model.embed_tokens.weight, embed_tokens.weight)")
     }
 
     fn load_final_norm(
@@ -46,7 +50,11 @@ impl ModelWeightLoader for DeepSeekV4WeightLoader {
         _config: &ModelConfig,
         _gpu: &dyn GpuBackend,
     ) -> Result<DenseWeight> {
-        dense(store, "model.norm.weight")
+        if let Ok(w) = dense(store, "model.norm.weight") {
+            return Ok(w);
+        }
+        dense(store, "norm.weight")
+            .context("DeepSeek-V4: no final norm tensor found (tried model.norm.weight, norm.weight)")
     }
 
     fn load_lm_head(&self, store: &WeightStore, config: &ModelConfig) -> Result<DenseWeight> {
