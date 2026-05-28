@@ -24,7 +24,8 @@ pub fn load_all_layers(
     let mut yarn_inv_freq = DevicePtr::NULL;
 
     for i in 0..n {
-        let lp = config.layer_prefix(i);
+        // RedHatAI re-quant uses flattened naming: layers.N.* instead of model.layers.N.*
+        let lp = format!("layers.{i}");
         let ap = format!("{lp}.self_attn");
 
         let input_norm = dense(store, &format!("{lp}.input_layernorm.weight"))?;

@@ -44,7 +44,8 @@ pub fn assemble_layer(
     gpu: &dyn GpuBackend,
     layer_kv_dtypes: &[KvCacheDtype],
 ) -> Result<Box<dyn TransformerLayer>> {
-    let lp = config.layer_prefix(layer_idx);
+    // RedHatAI re-quant uses flattened naming: layers.N.* instead of model.layers.N.*
+    let lp = format!("layers.{layer_idx}");
     let h = config.hidden_size;
     let kv_dtype = layer_kv_dtypes
         .get(layer_idx)

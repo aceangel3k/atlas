@@ -37,11 +37,15 @@ impl ModelWeightLoader for DeepSeekV4WeightLoader {
     }
 
     fn load_embedding(&self, store: &WeightStore, _config: &ModelConfig) -> Result<DenseWeight> {
+        // RedHatAI re-quant uses flattened naming; try it first, then standard HF names.
+        if let Ok(w) = dense(store, "embed.weight") {
+            return Ok(w);
+        }
         if let Ok(w) = dense(store, "model.embed_tokens.weight") {
             return Ok(w);
         }
         dense(store, "embed_tokens.weight")
-            .context("DeepSeek-V4: no embedding tensor found (tried model.embed_tokens.weight, embed_tokens.weight)")
+            .context("DeepSeek-V4: no embedding tensor found (tried embed.weight, model.embed_tokens.weight, embed_tokens.weight)")
     }
 
     fn load_final_norm(
@@ -50,11 +54,14 @@ impl ModelWeightLoader for DeepSeekV4WeightLoader {
         _config: &ModelConfig,
         _gpu: &dyn GpuBackend,
     ) -> Result<DenseWeight> {
+        if let Ok(w) = dense(store, "norm.weight") {
+            return Ok(w);
+        }
         if let Ok(w) = dense(store, "model.norm.weight") {
             return Ok(w);
         }
-        dense(store, "norm.weight")
-            .context("DeepSeek-V4: no final norm tensor found (tried model.norm.weight, norm.weight)")
+        dense(store, "final_norm.weight")
+            .context("DeepSeek-V4: no final norm tensor found (tried norm.weight, model.norm.weight, final_norm.weight)")
     }
 
     fn load_lm_head(&self, store: &WeightStore, config: &ModelConfig) -> Result<DenseWeight> {
