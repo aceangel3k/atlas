@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use atlas_core::config::ModelConfig;
 use spark_runtime::gpu::DevicePtr;
 use spark_runtime::gpu::GpuBackend;
@@ -12,8 +12,8 @@ use crate::layers::FfnComponent;
 use crate::layers::MoeLayer;
 use crate::layers::qwen3_attention::{MlaWeights, Qwen3AttentionLayer};
 use crate::weight_map::{
-    AttentionWeights, DenseWeight, QuantizeCtx, QuantizedWeight,
-    detect_nvfp4_variant, load_moe, quantize_to_nvfp4,
+    AttentionWeights, DenseWeight, ExpertWeight, MoeWeights, QuantizedWeight,
+    quantize_to_nvfp4, quantized_v2,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -53,22 +53,42 @@ pub fn assemble_layer(
         .unwrap_or(KvCacheDtype::Bf16);
 
     // ── MoE FFN ──
-    let variant = detect_nvfp4_variant(store, config);
-    let qctx = QuantizeCtx {
-        absmax_k: gpu.kernel("quantize_nvfp4", "nvfp4_global_absmax")?,
-        quantize_k: gpu.kernel("quantize_nvfp4", "quantize_bf16_to_nvfp4")?,
-        stream: gpu.default_stream(),
-    };
-    let moe_weights = load_moe(store, &lp, config.num_experts, gpu, config, variant, qctx)?;
+    // RedHatAI re-quant uses ffn.gate.weight and ffn.experts.E.w1/w2/w3 naming.
+    let p = &lp;
+    let gate = dense(store, &format!("{p}.ffn.gate.weight"))?;
     let gate_nvfp4 = Some(quantize_to_nvfp4(
-        &moe_weights.gate,
+        &gate,
         config.num_experts,
         config.hidden_size,
         gpu,
-        qctx.absmax_k,
-        qctx.quantize_k,
-        qctx.stream,
+        gpu.kernel("quantize_nvfp4", "nvfp4_global_absmax")?,
+        gpu.kernel("quantize_nvfp4", "quantize_bf16_to_nvfp4")?,
+        gpu.default_stream(),
     )?);
+
+    let mut experts = Vec::with_capacity(config.num_experts);
+    for e in 0..config.num_experts {
+        if config.is_local_expert(e) {
+            let ep = format!("{p}.ffn.experts.{e}");
+            let gate_proj = quantized_v2(store, &format!("{ep}.w1"), gpu)
+                .with_context(|| format!("DeepSeek-V4 expert {e}: w1"))?;
+            let up_proj = quantized_v2(store, &format!("{ep}.w3"), gpu)
+                .with_context(|| format!("DeepSeek-V4 expert {e}: w3"))?;
+            let down_proj = quantized_v2(store, &format!("{ep}.w2"), gpu)
+                .with_context(|| format!("DeepSeek-V4 expert {e}: w2"))?;
+            experts.push(ExpertWeight { gate_proj, up_proj, down_proj });
+        } else {
+            experts.push(ExpertWeight::null());
+        }
+    }
+    let moe_weights = MoeWeights {
+        gate,
+        shared_expert: ExpertWeight::null(),
+        shared_expert_gate: DenseWeight { weight: DevicePtr::NULL },
+        experts,
+        router_pre_norm: None,
+        correction_bias: None,
+    };
     let moe = MoeLayer::new(moe_weights, config.num_experts, gate_nvfp4, gpu, config)?;
 
     // ── MLA weights ──

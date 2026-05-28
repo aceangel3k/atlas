@@ -26,12 +26,12 @@ pub fn load_all_layers(
     for i in 0..n {
         // RedHatAI re-quant uses flattened naming: layers.N.* instead of model.layers.N.*
         let lp = format!("layers.{i}");
-        let ap = format!("{lp}.self_attn");
+        let ap = format!("{lp}.attn");
 
-        let input_norm = dense(store, &format!("{lp}.input_layernorm.weight"))?;
-        let post_attn_norm = dense(store, &format!("{lp}.post_attention_layernorm.weight"))?;
+        let input_norm = dense(store, &format!("{lp}.attn_norm.weight"))?;
+        let post_attn_norm = dense(store, &format!("{lp}.ffn_norm.weight"))?;
 
-        let wq_a = dense_auto(store, &format!("{ap}.q_a_proj.weight"), gpu)?;
+        let wq_a = dense_auto(store, &format!("{ap}.wq_a.weight"), gpu)?;
         let wq_a_nvfp4 = Some(quantize_to_nvfp4(
             &wq_a,
             config.q_lora_rank,
@@ -41,7 +41,7 @@ pub fn load_all_layers(
             quantize_k,
             stream,
         )?);
-        let wq_b = dense_auto(store, &format!("{ap}.q_b_proj.weight"), gpu)?;
+        let wq_b = dense_auto(store, &format!("{ap}.wq_b.weight"), gpu)?;
         let wq_b_nvfp4 = Some(quantize_to_nvfp4(
             &wq_b,
             config.num_attention_heads * config.head_dim,
@@ -51,9 +51,9 @@ pub fn load_all_layers(
             quantize_k,
             stream,
         )?);
-        let q_a_norm = dense(store, &format!("{ap}.q_a_layernorm.weight"))?;
+        let q_a_norm = dense(store, &format!("{ap}.q_norm.weight"))?;
 
-        let wkv_a = dense_auto(store, &format!("{ap}.kv_a_proj_with_mqa.weight"), gpu)?;
+        let wkv_a = dense_auto(store, &format!("{ap}.wkv.weight"), gpu)?;
         let wkv_a_nvfp4 = Some(quantize_to_nvfp4(
             &wkv_a,
             config.kv_lora_rank + config.qk_rope_head_dim,
@@ -63,10 +63,11 @@ pub fn load_all_layers(
             quantize_k,
             stream,
         )?);
-        let wkv_b = dense_auto(store, &format!("{ap}.kv_b_proj.weight"), gpu)?;
-        let kv_a_norm = dense(store, &format!("{ap}.kv_a_layernorm.weight"))?;
+        // RedHatAI re-quant: wo_a = kv_b_proj, wo_b = o_proj
+        let wkv_b = dense_auto(store, &format!("{ap}.wo_a.weight"), gpu)?;
+        let kv_a_norm = dense(store, &format!("{ap}.kv_norm.weight"))?;
 
-        let o_dense = dense_auto(store, &format!("{ap}.o_proj.weight"), gpu)?;
+        let o_dense = dense_auto(store, &format!("{ap}.wo_b.weight"), gpu)?;
         let o_nvfp4 = Some(quantize_to_nvfp4(
             &o_dense,
             config.hidden_size,
