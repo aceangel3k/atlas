@@ -195,6 +195,70 @@ pub(crate) fn dequant_fp8_blockscaled_to_bf16(
     Ok(DenseWeight { weight: ptr })
 }
 
+/// Dequantize FP8 E4M3 per-tensor or per-channel scaled weight → BF16.
+///
+/// Used by RedHatAI re-quant checkpoints where only `.weight_scale`
+/// (single scalar or per-row 1-D) is present, not the 2-D
+/// `.weight_scale_inv` block scales.
+pub(crate) fn dequant_fp8_per_tensor_to_bf16(
+    store: &WeightStore,
+    prefix: &str,
+    gpu: &dyn GpuBackend,
+) -> Result<DenseWeight> {
+    let w = store.get(&format!("{prefix}.weight"))?;
+    ensure!(
+        w.dtype == WeightDtype::FP8E4M3,
+        "Expected FP8E4M3 for {prefix}.weight, got {:?}",
+        w.dtype,
+    );
+    ensure!(w.shape.len() == 2, "Expected 2D weight for {prefix}, got {:?}", w.shape);
+    let n = w.shape[0];
+    let k = w.shape[1];
+    let total = n * k;
+
+    let mut fp8_buf = vec![0u8; total];
+    gpu.copy_d2h(w.ptr, &mut fp8_buf)?;
+
+    let s = store.get(&format!("{prefix}.weight_scale"))?;
+    let scale_is_f32 = s.dtype == WeightDtype::FP32;
+    let scale_count = s.shape.iter().product::<usize>();
+    let scale_bytes_per = if scale_is_f32 { 4 } else { 2 };
+    let mut scale_buf = vec![0u8; scale_count * scale_bytes_per];
+    gpu.copy_d2h(s.ptr, &mut scale_buf)?;
+
+    let mut bf16_out = vec![0u8; total * 2];
+    for row in 0..n {
+        let scale_idx = if scale_count == 1 { 0 } else { row };
+        let scale_f32 = if scale_is_f32 {
+            let b = [
+                scale_buf[scale_idx * 4],
+                scale_buf[scale_idx * 4 + 1],
+                scale_buf[scale_idx * 4 + 2],
+                scale_buf[scale_idx * 4 + 3],
+            ];
+            f32::from_le_bytes(b)
+        } else {
+            let b = [scale_buf[scale_idx * 2], scale_buf[scale_idx * 2 + 1]];
+            bf16_bytes_to_f32(b)
+        };
+
+        for col in 0..k {
+            let fp8_byte = fp8_buf[row * k + col];
+            let val = fp8_e4m3_to_f32(fp8_byte) * scale_f32;
+            let bf16_val = f32_to_bf16(val);
+            let out_idx = (row * k + col) * 2;
+            let [lo, hi] = bf16_val.to_le_bytes();
+            bf16_out[out_idx] = lo;
+            bf16_out[out_idx + 1] = hi;
+        }
+    }
+
+    let ptr = gpu.alloc(bf16_out.len())?;
+    gpu.copy_h2d(&bf16_out, ptr)?;
+    tracing::debug!("Dequanted FP8 per-tensor {prefix}: [{n},{k}] scale_count={scale_count} → BF16");
+    Ok(DenseWeight { weight: ptr })
+}
+
 /// Convert BF16 bytes (little-endian) to f32.
 pub(super) fn bf16_bytes_to_f32(bytes: [u8; 2]) -> f32 {
     let bits = u16::from_le_bytes(bytes);
@@ -216,7 +280,15 @@ pub(crate) fn dense_auto(
         let prefix = name
             .strip_suffix(".weight")
             .ok_or_else(|| anyhow::anyhow!("FP8 tensor {name} doesn't end with .weight"))?;
-        dequant_fp8_blockscaled_to_bf16(store, prefix, gpu)
+        if store.contains(&format!("{prefix}.weight_scale_inv")) {
+            dequant_fp8_blockscaled_to_bf16(store, prefix, gpu)
+        } else if store.contains(&format!("{prefix}.weight_scale")) {
+            dequant_fp8_per_tensor_to_bf16(store, prefix, gpu)
+        } else {
+            bail!(
+                "FP8 tensor {name}: no .weight_scale_inv or .weight_scale found for dequant"
+            )
+        }
     } else {
         Ok(DenseWeight { weight: w.ptr })
     }
