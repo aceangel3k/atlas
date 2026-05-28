@@ -14,6 +14,7 @@ impl MoeLayer {
     ///           → unpermute + weighted reduce → shared expert blend.
     /// Shared expert uses standard w4a16_gemm (single-expert, M=N_tokens).
     #[allow(unused_assignments)]
+    #[allow(unreachable_code)] // TODO: remove once NVFP4 grouped GEMM is fixed
     pub fn forward_prefill(
         &self,
         input: DevicePtr, // [num_tokens, H] BF16 — normed MoE input
