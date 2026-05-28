@@ -22,10 +22,11 @@ pub fn parse_deepseek_v4(json: &str) -> Result<ModelConfig> {
     let mut raw: serde_json::Value =
         serde_json::from_str(json).context("Invalid JSON in DeepSeek-V4 config.json")?;
 
-    // Some DeepSeek-V4 checkpoints have `kv_lora_rank: null` instead of omitting
-    // the key. Serde's #[serde(default)] only handles missing keys, not null.
+    // Some DeepSeek-V4 checkpoints have `null` for numeric fields instead of
+    // omitting the key. Serde's #[serde(default)] only handles missing keys,
+    // not null. Sanitize all null top-level values to 0.
     if let Some(obj) = raw.as_object_mut() {
-        if let Some(v) = obj.get_mut("kv_lora_rank") {
+        for v in obj.values_mut() {
             if v.is_null() {
                 *v = serde_json::Value::Number(serde_json::Number::from(0));
             }
