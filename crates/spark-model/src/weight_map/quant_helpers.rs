@@ -232,41 +232,74 @@ pub(crate) fn dequant_fp8_per_tensor_to_bf16(
     );
 
     let mut bf16_out = vec![0u8; total * 2];
-    let block_n = if scale_count > 1 && n % scale_count == 0 { n / scale_count } else { 1 };
-    let block_k = if scale_count > 1 && k % scale_count == 0 { k / scale_count } else { 1 };
 
-    // Determine scale layout:
-    // 1. scale_count == 1 → per-tensor
-    // 2. scale_count == n → per-row
-    // 3. scale_count == k → per-column
-    // 4. scale_count == n / block_n for some block_n → block-per-row
-    // 5. scale_count == k / block_k for some block_k → block-per-col
-    let is_block_row = scale_count > 1 && n % scale_count == 0;
-    let is_block_col = scale_count > 1 && k % scale_count == 0;
-    let is_per_row = scale_count == n;
-    let is_per_col = scale_count == k;
+    // ── Detect scale layout ──
+    // RedHatAI FP8 checkpoints store weight_scale as a 1-D flattened tensor.
+    // It can be: per-tensor (1), per-row (n), per-col (k), or 2-D block grid.
+    // For 2-D block: scale_count = sn * sk where sn = n/block_n, sk = k/block_k.
+    let mut block_n = 1usize;
+    let mut block_k = 1usize;
+    let mut sn = scale_count;
+    let mut sk = 1usize;
+    let mut is_2d_block = false;
 
-    if scale_count > 1 && !is_per_row && !is_per_col && !is_block_row && !is_block_col {
-        tracing::warn!(
-            "Scale count {scale_count} doesn't match n={n} or k={k} for {prefix}, using row % scale_count"
-        );
+    if scale_count == 1 {
+        // per-tensor: block_n/block_k stay 1
+    } else if scale_count == n {
+        // per-row
+        block_n = 1;
+    } else if scale_count == k {
+        // per-col
+        block_k = 1;
+    } else {
+        // Try 2-D block factorization with common block sizes
+        for &bn in &[1usize, 64, 128, 256] {
+            if bn > 0 && n % bn == 0 {
+                let trial_sn = n / bn;
+                if trial_sn > 0 && scale_count % trial_sn == 0 {
+                    let trial_sk = scale_count / trial_sn;
+                    if trial_sk > 0 && k % trial_sk == 0 {
+                        let bk = k / trial_sk;
+                        block_n = bn;
+                        block_k = bk;
+                        sn = trial_sn;
+                        sk = trial_sk;
+                        is_2d_block = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if !is_2d_block {
+            tracing::warn!(
+                "Scale count {scale_count} for {prefix} [{n},{k}] does not match known layouts; using per-row fallback"
+            );
+            block_n = 1;
+        }
     }
+
+    tracing::info!(
+        "FP8 dequant {prefix}: layout={} block=[{block_n},{block_k}] grid=[{sn},{sk}]",
+        if scale_count == 1 { "per-tensor" }
+        else if scale_count == n { "per-row" }
+        else if scale_count == k { "per-col" }
+        else if is_2d_block { "2d-block" }
+        else { "fallback" }
+    );
 
     for row in 0..n {
         for col in 0..k {
             let scale_idx = if scale_count == 1 {
                 0
-            } else if is_per_row {
+            } else if scale_count == n {
                 row
-            } else if is_per_col {
+            } else if scale_count == k {
                 col
-            } else if is_block_row {
-                row / block_n
-            } else if is_block_col {
-                col / block_k
+            } else if is_2d_block {
+                (row / block_n) * sk + (col / block_k)
             } else {
-                // Fallback: modulo mapping
-                (row * k + col) % scale_count
+                // fallback: repeat scales cyclically across rows
+                row % scale_count.max(1)
             };
 
             let scale_f32 = if scale_is_f32 {
