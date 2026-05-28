@@ -35,9 +35,12 @@ fn from_f32(v: f32) -> [u8; 2] {
 }
 
 /// Split wkv_b into W_UK and W_UV, transpose W_UK, extract wq_b_rope rows.
+/// `wkv_b_shape` and `wq_b_shape` are the actual [n, k] dims from the checkpoint.
 pub fn build_per_head_views(
     wkv_b: &DenseWeight,
+    wkv_b_shape: &[usize],
     wq_b: &DenseWeight,
+    wq_b_shape: &[usize],
     config: &ModelConfig,
     gpu: &dyn GpuBackend,
 ) -> Result<(DenseWeight, DenseWeight, DenseWeight, Vec<u8>)> {
@@ -50,7 +53,8 @@ pub fn build_per_head_views(
     let n_heads = config.num_attention_heads;
     let b = bf16();
 
-    let wkvb_bytes = n_kv * (nope + v_dim) * kv_lora * b;
+    // Use actual tensor size from checkpoint to avoid over-read
+    let wkvb_bytes = wkv_b_shape[0] * wkv_b_shape[1] * b;
     let mut wkvb_buf = vec![0u8; wkvb_bytes];
     gpu.copy_d2h(wkv_b.weight, &mut wkvb_buf)?;
 
@@ -61,8 +65,10 @@ pub fn build_per_head_views(
         for lkv in 0..kv_lora {
             for p in 0..nope {
                 let src = ((h * (nope + v_dim) + p) * kv_lora + lkv) * b;
-                let dst = ((h * kv_lora + lkv) * nope + p) * b;
-                uk_host[dst..dst + b].copy_from_slice(&wkvb_buf[src..src + b]);
+                if src + b <= wkvb_buf.len() {
+                    let dst = ((h * kv_lora + lkv) * nope + p) * b;
+                    uk_host[dst..dst + b].copy_from_slice(&wkvb_buf[src..src + b]);
+                }
             }
         }
     }
@@ -76,8 +82,10 @@ pub fn build_per_head_views(
         for v in 0..v_dim {
             for lkv in 0..kv_lora {
                 let src = ((h * (nope + v_dim) + nope + v) * kv_lora + lkv) * b;
-                let dst = ((h * v_dim + v) * kv_lora + lkv) * b;
-                uv_host[dst..dst + b].copy_from_slice(&wkvb_buf[src..src + b]);
+                if src + b <= wkvb_buf.len() {
+                    let dst = ((h * v_dim + v) * kv_lora + lkv) * b;
+                    uv_host[dst..dst + b].copy_from_slice(&wkvb_buf[src..src + b]);
+                }
             }
         }
     }
@@ -86,7 +94,7 @@ pub fn build_per_head_views(
 
     // wq_b_rope: [n_heads*rope, q_lora]
     let rope = config.qk_rope_head_dim;
-    let wq_bytes = n_heads * hd * q_lora * b;
+    let wq_bytes = wq_b_shape[0] * wq_b_shape[1] * b;
     let mut wq_buf = vec![0u8; wq_bytes];
     gpu.copy_d2h(wq_b.weight, &mut wq_buf)?;
     let rope_size = n_heads * rope * q_lora * b;
@@ -95,8 +103,10 @@ pub fn build_per_head_views(
         for r in 0..rope {
             for l in 0..q_lora {
                 let src = ((h * hd + nope + r) * q_lora + l) * b;
-                let dst = ((h * rope + r) * q_lora + l) * b;
-                rope_host[dst..dst + b].copy_from_slice(&wq_buf[src..src + b]);
+                if src + b <= wq_buf.len() {
+                    let dst = ((h * rope + r) * q_lora + l) * b;
+                    rope_host[dst..dst + b].copy_from_slice(&wq_buf[src..src + b]);
+                }
             }
         }
     }
@@ -116,6 +126,7 @@ pub fn build_per_head_views(
 /// W_QK_absorbed = wq_b_nope @ W_UK_T
 pub fn build_w_qk_absorbed(
     wq_b: &DenseWeight,
+    wq_b_shape: &[usize],
     w_uk_t: &DenseWeight,
     config: &ModelConfig,
     gpu: &dyn GpuBackend,
@@ -131,7 +142,8 @@ pub fn build_w_qk_absorbed(
     let wqk_size = n_kv * kv_lora * q_lora * b;
     let wqk_ptr = alloc_or_managed(gpu, wqk_size)?;
 
-    let mut wqb_buf = vec![0u8; n_heads * hd * q_lora * b];
+    let wqb_bytes = wq_b_shape[0] * wq_b_shape[1] * b;
+    let mut wqb_buf = vec![0u8; wqb_bytes];
     gpu.copy_d2h(wq_b.weight, &mut wqb_buf)?;
     let mut wuk_buf = vec![0u8; n_kv * kv_lora * nope * b];
     gpu.copy_d2h(w_uk_t.weight, &mut wuk_buf)?;
@@ -142,8 +154,18 @@ pub fn build_w_qk_absorbed(
             for l in 0..q_lora {
                 let mut sum = 0.0f32;
                 for p in 0..nope {
-                    let wqb = to_f32(&wqb_buf, (n * hd + p) * q_lora + l);
-                    let wuk = to_f32(&wuk_buf, n * kv_lora * nope + lkv * nope + p);
+                    let wqb_idx = (n * hd + p) * q_lora + l;
+                    let wuk_idx = n * kv_lora * nope + lkv * nope + p;
+                    let wqb = if wqb_idx * 2 + 2 <= wqb_buf.len() {
+                        to_f32(&wqb_buf, wqb_idx)
+                    } else {
+                        0.0
+                    };
+                    let wuk = if wuk_idx * 2 + 2 <= wuk_buf.len() {
+                        to_f32(&wuk_buf, wuk_idx)
+                    } else {
+                        0.0
+                    };
                     sum += wqb * wuk;
                 }
                 wqk_f32[(n * kv_lora + lkv) * q_lora + l] = sum;

@@ -68,22 +68,25 @@ pub fn load_all_layers(
         )?);
         // RedHatAI re-quant: wo_a = kv_b_proj, wo_b = o_proj
         let wkv_b = dense_auto(store, &format!("{ap}.wo_a.weight"), gpu)?;
+        let wkv_b_shape = store.get(&format!("{ap}.wo_a.weight"))?.shape.clone();
         let kv_a_norm = dense(store, &format!("{ap}.kv_norm.weight"))?;
 
         let o_dense = dense_auto(store, &format!("{ap}.wo_b.weight"), gpu)?;
+        let o_dense_shape = store.get(&format!("{ap}.wo_b.weight"))?.shape.clone();
         let o_nvfp4 = Some(quantize_to_nvfp4(
             &o_dense,
-            config.hidden_size,
-            config.num_attention_heads * config.head_dim,
+            o_dense_shape[0],
+            o_dense_shape[1],
             gpu,
             absmax_k,
             quantize_k,
             stream,
         )?);
 
+        let wq_b_shape = store.get(&format!("{ap}.wq_b.weight"))?.shape.clone();
         let (w_uk_t, w_uv, wq_b_rope, w_uk_host) =
-            super::compute::build_per_head_views(&wkv_b, &wq_b, config, gpu)?;
-        let w_qk_absorbed = super::compute::build_w_qk_absorbed(&wq_b, &w_uk_t, config, gpu)?;
+            super::compute::build_per_head_views(&wkv_b, &wkv_b_shape, &wq_b, &wq_b_shape, config, gpu)?;
+        let w_qk_absorbed = super::compute::build_w_qk_absorbed(&wq_b, &wq_b_shape, &w_uk_t, config, gpu)?;
         let (w_uk_block_diag, w_uv_block_diag) =
             super::compute::build_block_diagonals(&w_uk_host, &w_uv, config, gpu)?;
         yarn_inv_freq = super::compute::ensure_yarn_inv_freq(&mut yarn_inv_freq, config, gpu)?;
