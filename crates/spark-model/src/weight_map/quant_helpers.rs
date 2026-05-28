@@ -72,48 +72,134 @@ pub(crate) fn dequant_fp8_blockscaled_to_bf16(
         )
     })?;
 
-    // Download block scale_inv. DeepSeek-V3 / Qwen FP8 ship BF16 here;
-    // MiniMax-M2 ships FP32. Handle both — the subsequent dequant reads
-    // a scalar `f32` scale per (row, col) either way.
-    let s = store.get(&format!("{prefix}.weight_scale_inv"))?;
-    ensure!(
-        s.dtype == WeightDtype::BF16 || s.dtype == WeightDtype::FP32,
-        "Expected BF16 or FP32 for {prefix}.weight_scale_inv, got {:?}",
-        s.dtype,
-    );
-    let sn = s.shape[0];
-    let sk = s.shape[1];
-    let block_n = n / sn;
-    let block_k = k / sk;
-    let scale_is_f32 = s.dtype == WeightDtype::FP32;
-    let scale_bytes_per = if scale_is_f32 { 4 } else { 2 };
-    let mut scale_buf = vec![0u8; sn * sk * scale_bytes_per];
-    gpu.copy_d2h(s.ptr, &mut scale_buf).with_context(|| {
-        format!(
-            "D2H failed for {prefix}.weight_scale_inv: ptr={}, size={}",
-            s.ptr.0,
-            sn * sk * scale_bytes_per
-        )
-    })?;
+    // Download block scale. Try `.weight_scale_inv` first (standard HF / Qwen / MiniMax),
+    // then `.weight_scale` (RedHatAI / compressed-tensors block-scaled BF16/FP32),
+    // then `.scale` (DeepSeek-V4 original / RedHatAI re-quant with F8_E8M0).
+    enum ScaleDtype {
+        Fp32,
+        Bf16,
+        E8M0,
+    }
+    let (scale_buf, _sn, sk, block_n, block_k, scale_dtype) =
+        if let Ok(s) = store.get(&format!("{prefix}.weight_scale_inv")) {
+            ensure!(
+                s.dtype == WeightDtype::BF16 || s.dtype == WeightDtype::FP32,
+                "Expected BF16 or FP32 for {prefix}.weight_scale_inv, got {:?}",
+                s.dtype,
+            );
+            let sn = s.shape[0];
+            let sk = s.shape[1];
+            let block_n = n / sn;
+            let block_k = k / sk;
+            let scale_is_f32 = s.dtype == WeightDtype::FP32;
+            let scale_bytes_per = if scale_is_f32 { 4 } else { 2 };
+            let mut buf = vec![0u8; sn * sk * scale_bytes_per];
+            gpu.copy_d2h(s.ptr, &mut buf).with_context(|| {
+                format!(
+                    "D2H failed for {prefix}.weight_scale_inv: ptr={}, size={}",
+                    s.ptr.0,
+                    sn * sk * scale_bytes_per
+                )
+            })?;
+            let sd = if scale_is_f32 { ScaleDtype::Fp32 } else { ScaleDtype::Bf16 };
+            (buf, sn, sk, block_n, block_k, sd)
+        } else if let Ok(s) = store.get(&format!("{prefix}.weight_scale")) {
+            // RedHatAI / compressed-tensors block-scaled BF16/FP32.
+            // Only accept 2-D scales here; 1-D scales are handled by per-tensor dequant.
+            ensure!(
+                s.dtype == WeightDtype::BF16 || s.dtype == WeightDtype::FP32,
+                "Expected BF16 or FP32 2-D block scale for {prefix}.weight_scale, got {:?}",
+                s.dtype,
+            );
+            let rank = s.shape.len();
+            let (sn, sk) = if rank == 2 {
+                (s.shape[0], s.shape[1])
+            } else if rank == 1 {
+                // Treat 1-D as per-row with single column block
+                (s.shape[0], 1)
+            } else {
+                bail!(
+                    "Expected 1-D or 2-D scale for {prefix}.weight_scale, got shape {:?}",
+                    s.shape
+                );
+            };
+            let block_n = if sn > 1 { n / sn } else { n };
+            let block_k = if sk > 1 { k / sk } else { k };
+            let scale_is_f32 = s.dtype == WeightDtype::FP32;
+            let scale_bytes_per = if scale_is_f32 { 4 } else { 2 };
+            let mut buf = vec![0u8; sn * sk * scale_bytes_per];
+            gpu.copy_d2h(s.ptr, &mut buf).with_context(|| {
+                format!(
+                    "D2H failed for {prefix}.weight_scale: ptr={}, size={}",
+                    s.ptr.0,
+                    sn * sk * scale_bytes_per
+                )
+            })?;
+            let sd = if scale_is_f32 { ScaleDtype::Fp32 } else { ScaleDtype::Bf16 };
+            (buf, sn, sk, block_n, block_k, sd)
+        } else if let Ok(s) = store.get(&format!("{prefix}.scale")) {
+            // DeepSeek-V4 block-scaled FP8 uses `.scale` with F8_E8M0 dtype.
+            let rank = s.shape.len();
+            let (sn, sk) = if rank == 2 {
+                (s.shape[0], s.shape[1])
+            } else if rank == 1 {
+                // Treat 1-D scale as per-row (N) with single column
+                (s.shape[0], 1)
+            } else {
+                bail!(
+                    "Expected 1-D or 2-D scale for {prefix}.scale, got shape {:?}",
+                    s.shape
+                );
+            };
+            let block_n = if sn > 1 { n / sn } else { n };
+            let block_k = if sk > 1 { k / sk } else { k };
+            let sd = match s.dtype {
+                WeightDtype::FP32 => ScaleDtype::Fp32,
+                WeightDtype::BF16 => ScaleDtype::Bf16,
+                WeightDtype::FP8E8M0 => ScaleDtype::E8M0,
+                other => bail!(
+                    "Expected FP32, BF16, or FP8E8M0 for {prefix}.scale, got {:?}",
+                    other,
+                ),
+            };
+            let scale_bytes_per = s.dtype.byte_size();
+            let mut buf = vec![0u8; sn * sk * scale_bytes_per];
+            gpu.copy_d2h(s.ptr, &mut buf).with_context(|| {
+                format!(
+                    "D2H failed for {prefix}.scale: ptr={}, size={}",
+                    s.ptr.0,
+                    sn * sk * scale_bytes_per
+                )
+            })?;
+            (buf, sn, sk, block_n, block_k, sd)
+        } else {
+            bail!(
+                "FP8 tensor {prefix}: no .weight_scale_inv, .weight_scale, or .scale found for dequant"
+            );
+        };
 
-    // CPU dequant: bf16_out[i,j] = fp8[i,j] * scale_inv[i/block_n, j/block_k]
+    // CPU dequant: bf16_out[i,j] = fp8[i,j] * scale[i/block_n, j/block_k]
     let mut bf16_out = vec![0u8; total * 2];
     for row in 0..n {
         let scale_row = row / block_n;
         for col in 0..k {
             let scale_col = col / block_k;
             let scale_idx = scale_row * sk + scale_col;
-            let scale_f32 = if scale_is_f32 {
-                let b = [
-                    scale_buf[scale_idx * 4],
-                    scale_buf[scale_idx * 4 + 1],
-                    scale_buf[scale_idx * 4 + 2],
-                    scale_buf[scale_idx * 4 + 3],
-                ];
-                f32::from_le_bytes(b)
-            } else {
-                let b = [scale_buf[scale_idx * 2], scale_buf[scale_idx * 2 + 1]];
-                bf16_bytes_to_f32(b)
+            let scale_f32 = match scale_dtype {
+                ScaleDtype::E8M0 => fp8_e8m0_to_f32(scale_buf[scale_idx]),
+                ScaleDtype::Fp32 => {
+                    let b = [
+                        scale_buf[scale_idx * 4],
+                        scale_buf[scale_idx * 4 + 1],
+                        scale_buf[scale_idx * 4 + 2],
+                        scale_buf[scale_idx * 4 + 3],
+                    ];
+                    f32::from_le_bytes(b)
+                }
+                ScaleDtype::Bf16 => {
+                    let b = [scale_buf[scale_idx * 2], scale_buf[scale_idx * 2 + 1]];
+                    bf16_bytes_to_f32(b)
+                }
             };
 
             let fp8_byte = fp8_buf[row * k + col];
@@ -322,13 +408,33 @@ pub(crate) fn dense_auto(
         let prefix = name
             .strip_suffix(".weight")
             .ok_or_else(|| anyhow::anyhow!("FP8 tensor {name} doesn't end with .weight"))?;
-        if store.contains(&format!("{prefix}.weight_scale_inv")) {
-            dequant_fp8_blockscaled_to_bf16(store, prefix, gpu)
+        // Determine which scale key exists and whether it is 2-D block-scaled
+        // or 1-D per-tensor / per-row / per-column.
+        let scale_key = if store.contains(&format!("{prefix}.weight_scale_inv")) {
+            Some("weight_scale_inv")
+        } else if store.contains(&format!("{prefix}.scale")) {
+            Some("scale")
         } else if store.contains(&format!("{prefix}.weight_scale")) {
+            Some("weight_scale")
+        } else {
+            None
+        };
+        let is_block_scaled = scale_key.map_or(false, |sk| {
+            // 2-D scale shape ⇒ block-scaled; 1-D ⇒ per-tensor/row/col.
+            store
+                .get(&format!("{prefix}.{sk}"))
+                .map(|t| t.shape.len() == 2)
+                .unwrap_or(false)
+        });
+        if scale_key.is_some() && is_block_scaled {
+            // Block-scaled FP8 (`.weight_scale_inv` BF16/FP32, `.weight_scale` BF16/FP32,
+            // or `.scale` F8_E8M0)
+            dequant_fp8_blockscaled_to_bf16(store, prefix, gpu)
+        } else if scale_key == Some("weight_scale") {
             dequant_fp8_per_tensor_to_bf16(store, prefix, gpu)
         } else {
             bail!(
-                "FP8 tensor {name}: no .weight_scale_inv or .weight_scale found for dequant"
+                "FP8 tensor {name}: no .weight_scale_inv, .scale, or .weight_scale found for dequant"
             )
         }
     } else {

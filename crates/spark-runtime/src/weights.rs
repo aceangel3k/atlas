@@ -36,6 +36,7 @@ pub enum WeightDtype {
     BF16,
     FP32,
     FP8E4M3,
+    FP8E8M0,
     UInt8,
     Int64,
 }
@@ -46,6 +47,7 @@ impl WeightDtype {
             Self::BF16 => 2,
             Self::FP32 => 4,
             Self::FP8E4M3 => 1,
+            Self::FP8E8M0 => 1,
             Self::UInt8 => 1,
             Self::Int64 => 8,
         }
@@ -57,6 +59,7 @@ impl WeightDtype {
             safetensors::Dtype::F32 => Ok(Self::FP32),
             safetensors::Dtype::U8 => Ok(Self::UInt8),
             safetensors::Dtype::F8_E4M3 => Ok(Self::FP8E4M3),
+            safetensors::Dtype::F8_E8M0 => Ok(Self::FP8E8M0),
             safetensors::Dtype::I64 => Ok(Self::Int64),
             other => bail!("Unsupported safetensors dtype: {other:?}"),
         }
