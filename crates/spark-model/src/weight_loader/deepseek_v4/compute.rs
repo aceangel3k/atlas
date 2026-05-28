@@ -136,7 +136,6 @@ pub fn build_w_qk_absorbed(
     let q_lora = config.q_lora_rank;
     let nope = config.qk_nope_head_dim;
     let hd = config.head_dim;
-    let n_heads = config.num_attention_heads;
     let b = bf16();
 
     let wqk_size = n_kv * kv_lora * q_lora * b;
