@@ -195,6 +195,12 @@ EP2_ROUNDS = [
     # Nemotron Super 120B — user asked to force EP=2
     TestSpec("nemotron-super-120B-ep2",
              "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"),
+    # DeepSeek-V4-Flash — 284B total / 13B active, MLA+MoE, pure EP=2
+    # (TP>1 impossible because num_key_value_heads=1).
+    TestSpec("deepseek-v4-flash-ep2",
+             "deepseek-ai/DeepSeek-V4-Flash",
+             kv_dtype="bf16",
+             extra_args=["--max-seq-len", "32768"]),
 ]
 
 

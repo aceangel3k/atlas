@@ -509,7 +509,9 @@ fn test_parse_deepseek_v4_config() {
     assert!(!cfg.tie_word_embeddings);
     assert!(!cfg.attn_gated);
     assert_eq!(cfg.weight_prefix, "model");
-    assert_eq!(cfg.compress_ratios.len(), 43);
+    // DeepSeek-V4 ships 44 compress_ratios for 43 layers — the last
+    // trailing value is an artifact, not an error.
+    assert_eq!(cfg.compress_ratios.len(), 44);
     assert_eq!(cfg.num_hash_layers, 3);
     // Fallback: all layers treated as FullAttention
     assert_eq!(cfg.num_attention_layers(), 43);
@@ -522,6 +524,6 @@ fn test_parse_deepseek_v4_config() {
     assert!(caps.has_mtp);
     assert_eq!(
         caps.attention_type,
-        atlas_core::capabilities::AttentionType::Mla
+        crate::capabilities::AttentionType::Mla
     );
 }
