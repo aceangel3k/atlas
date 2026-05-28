@@ -222,27 +222,49 @@ pub(crate) fn dequant_fp8_per_tensor_to_bf16(
     let s = store.get(&format!("{prefix}.weight_scale"))?;
     let scale_is_f32 = s.dtype == WeightDtype::FP32;
     let scale_count = s.shape.iter().product::<usize>();
-    let scale_bytes_per = if scale_is_f32 { 4 } else { 2 };
+    let scale_bytes_per = s.dtype.byte_size();
     let mut scale_buf = vec![0u8; scale_count * scale_bytes_per];
     gpu.copy_d2h(s.ptr, &mut scale_buf)?;
 
+    tracing::info!(
+        "FP8 per-tensor dequant {prefix}: weight=[{n},{k}] scale_shape={:?} scale_dtype={:?} scale_count={scale_count} scale_bytes={scale_bytes_per}",
+        s.shape, s.dtype
+    );
+
     let mut bf16_out = vec![0u8; total * 2];
     for row in 0..n {
-        let scale_idx = if scale_count == 1 { 0 } else { row };
-        let scale_f32 = if scale_is_f32 {
-            let b = [
-                scale_buf[scale_idx * 4],
-                scale_buf[scale_idx * 4 + 1],
-                scale_buf[scale_idx * 4 + 2],
-                scale_buf[scale_idx * 4 + 3],
-            ];
-            f32::from_le_bytes(b)
+        let scale_idx = if scale_count == 1 {
+            0
+        } else if scale_count == n {
+            row
+        } else if scale_count == k {
+            // Per-column: will be applied inside inner loop
+            0 // placeholder, overridden below
         } else {
-            let b = [scale_buf[scale_idx * 2], scale_buf[scale_idx * 2 + 1]];
-            bf16_bytes_to_f32(b)
+            tracing::warn!(
+                "Scale count {scale_count} doesn't match n={n} or k={k} for {prefix}, using row % scale_count"
+            );
+            row % scale_count.max(1)
         };
 
         for col in 0..k {
+            let col_scale_idx = if scale_count == k { col } else { scale_idx };
+            let scale_f32 = if scale_is_f32 {
+                let b = [
+                    scale_buf[col_scale_idx * 4],
+                    scale_buf[col_scale_idx * 4 + 1],
+                    scale_buf[col_scale_idx * 4 + 2],
+                    scale_buf[col_scale_idx * 4 + 3],
+                ];
+                f32::from_le_bytes(b)
+            } else {
+                let b = [
+                    scale_buf[col_scale_idx * 2],
+                    scale_buf[col_scale_idx * 2 + 1],
+                ];
+                bf16_bytes_to_f32(b)
+            };
+
             let fp8_byte = fp8_buf[row * k + col];
             let val = fp8_e4m3_to_f32(fp8_byte) * scale_f32;
             let bf16_val = f32_to_bf16(val);
