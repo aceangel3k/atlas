@@ -18,7 +18,7 @@ Twelve `(GB10, model, quant)` targets ship in the default image today. One multi
 | MiniMax | MiniMax-M2.7 | `lukealonso/MiniMax-M2.7-NVFP4` | 229B / ~10B | Attention + 256-expert MoE | — | ✗ |
 | Nemotron-H | Nemotron-3-Nano-30B-A3B | `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4` | 30B / 3B | Mamba-2 + attention + MoE | 98 | ✗ |
 | Nemotron-H | Nemotron-3-Super-120B-A12B | `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4` | 120B / 12B | Mamba-2 + attention + MoE | 24 | ✗ |
-| DeepSeek-V4 | DeepSeek-V4-Flash | `deepseek-ai/DeepSeek-V4-Flash` | 284B / 13B | MLA + MoE + CSA/HCA *(fallback bring-up)* | — | ✗ |
+| DeepSeek-V4 | DeepSeek-V4-Flash | `deepseek-ai/DeepSeek-V4-Flash` | 284B / 13B | MLA + MoE + CSA/HCA, EP=2 | — | ✗ |
 
 Throughput figures are p50 single-request decode on a short prompt (`max_tokens ≤ 128`, `temperature ≤ 0.1`). The "Best tok/s" column reflects the flag set that wins for that model (e.g. MTP enabled where supported, NVFP4 KV cache for Qwen models). Full numbers for alternative flag combinations are in [Benchmarking](../operations/benchmarks.md).
 

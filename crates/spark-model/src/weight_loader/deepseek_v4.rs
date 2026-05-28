@@ -23,6 +23,10 @@ pub struct DeepSeekV4WeightLoader;
 
 impl ModelWeightLoader for DeepSeekV4WeightLoader {
     fn supports_tp(&self) -> bool {
+        // DeepSeek-V4 uses num_key_value_heads=1 (MQA), which makes
+        // head-parallel TP sharding impossible — 1 is not divisible by
+        // any tp_size > 1.  Multi-spark deployments MUST use pure EP
+        // (tp-size 1, ep-size 2/4/...) instead.
         false
     }
 

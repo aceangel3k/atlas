@@ -114,6 +114,7 @@ pub fn parse_deepseek_v4(json: &str) -> Result<ModelConfig> {
     if let Some(n) = raw.get("num_nextn_predict_layers").and_then(|v| v.as_u64()) {
         config.num_mtp_modules = n as usize;
         config.mtp_transformer_layers = 1;
+        config.mtp_num_hidden_layers = n as usize;
     }
 
     // Parse quantization_config if present
