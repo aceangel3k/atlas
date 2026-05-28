@@ -13,7 +13,7 @@ use crate::layers::MoeLayer;
 use crate::layers::qwen3_attention::{MlaWeights, Qwen3AttentionLayer};
 use crate::weight_map::{
     AttentionWeights, DenseWeight, ExpertWeight, MoeWeights, QuantizedWeight,
-    quantize_to_nvfp4, quantized_v2,
+    dense, quantize_to_nvfp4, quantized_v2,
 };
 
 #[allow(clippy::too_many_arguments)]
