@@ -69,13 +69,24 @@ impl ModelWeightLoader for DeepSeekV4WeightLoader {
     }
 
     fn load_lm_head(&self, store: &WeightStore, config: &ModelConfig) -> Result<DenseWeight> {
+        // Try standard HF name first
         if store.contains("lm_head.weight") {
-            dense(store, "lm_head.weight")
-        } else if config.tie_word_embeddings {
-            self.load_embedding(store, config)
-        } else {
-            anyhow::bail!("DeepSeek-V4: lm_head not found")
+            return dense(store, "lm_head.weight");
         }
+        // RedHatAI / consolidated checkpoints
+        if store.contains("output.weight") {
+            return dense(store, "output.weight");
+        }
+        if store.contains("head.weight") {
+            return dense(store, "head.weight");
+        }
+        // Tied embeddings: either config says so, or no separate head exists
+        if config.tie_word_embeddings || store.contains("embed.weight") || store.contains("model.embed_tokens.weight") {
+            return self.load_embedding(store, config);
+        }
+        anyhow::bail!(
+            "DeepSeek-V4: lm_head not found (tried lm_head.weight, output.weight, head.weight, and tied embeddings)"
+        )
     }
 
     fn load_mtp_weights(

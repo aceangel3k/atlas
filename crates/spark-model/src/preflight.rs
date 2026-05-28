@@ -113,9 +113,10 @@ fn check_embedding_and_head(store: &WeightStore) -> Result<()> {
     // LM head is optional (tied embeddings skip it). Scan suffixes:
     //   `lm_head.weight`       — HF / Qwen / Gemma / MiniMax
     //   `output.weight`        — Mistral consolidated
+    //   `head.weight`          — DeepSeek-V4 / RedHatAI re-quant
     let has_head = store
         .names()
-        .any(|n| n.ends_with("lm_head.weight") || n == "output.weight");
+        .any(|n| n.ends_with("lm_head.weight") || n == "output.weight" || n == "head.weight");
     if !has_head {
         tracing::info!("Pre-flight: no dedicated LM head tensor; assuming tied embeddings.");
     }
