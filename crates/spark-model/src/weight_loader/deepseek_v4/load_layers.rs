@@ -54,7 +54,7 @@ pub fn load_all_layers(
         let q_a_norm = dense(store, &format!("{ap}.q_norm.weight"))?;
 
         let wkv_a = dense_auto(store, &format!("{ap}.wkv.weight"), gpu)?;
-        let wkv_a_shape = store.get(&format!("{ap}.wkv.weight"))?.shape;
+        let wkv_a_shape = store.get(&format!("{ap}.wkv.weight"))?.shape.clone();
         let wkv_a_n = wkv_a_shape[0];
         let wkv_a_k = wkv_a_shape[1];
         let wkv_a_nvfp4 = Some(quantize_to_nvfp4(
