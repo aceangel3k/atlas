@@ -31,6 +31,12 @@ impl MoeLayer {
             return self.forward_batched(input, num_tokens, ctx, stream);
         }
 
+        // NVFP4 models: route all prefills through the per-token GEMV path
+        // while the grouped-GEMM kernel is being debugged for DeepSeek-V4
+        // dimensions (illegal address in moe_w4a16_grouped_gemm_ptrtable).
+        // TODO: revert once the grouped GEMM kernel is fixed.
+        return self.forward_batched(input, num_tokens, ctx, stream);
+
         // Lazy down_proj transpose: synchronous on the compute stream.
         // (See `kick_off_lazy_transpose` for an attempted overlap path
         // that regressed by 30 % on GB10 — SM contention dominated the
