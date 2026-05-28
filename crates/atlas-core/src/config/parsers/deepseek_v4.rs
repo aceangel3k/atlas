@@ -19,12 +19,23 @@ use anyhow::{Context, Result};
 use super::super::{LayerType, ModelConfig, finalize_config, parse_quantization_config};
 
 pub fn parse_deepseek_v4(json: &str) -> Result<ModelConfig> {
-    let raw: serde_json::Value =
+    let mut raw: serde_json::Value =
         serde_json::from_str(json).context("Invalid JSON in DeepSeek-V4 config.json")?;
 
+    // Some DeepSeek-V4 checkpoints have `kv_lora_rank: null` instead of omitting
+    // the key. Serde's #[serde(default)] only handles missing keys, not null.
+    if let Some(obj) = raw.as_object_mut() {
+        if let Some(v) = obj.get_mut("kv_lora_rank") {
+            if v.is_null() {
+                *v = serde_json::Value::Number(serde_json::Number::from(0));
+            }
+        }
+    }
+
     // DeepSeek-V4 ships a flat config.json (no nested text_config).
+    let json_fixed = serde_json::to_string(&raw).context("Failed to re-serialize DeepSeek-V4 config")?;
     let mut config: ModelConfig =
-        serde_json::from_str(json).context("Failed to parse deepseek_v4 config.json")?;
+        serde_json::from_str(&json_fixed).context("Failed to parse deepseek_v4 config.json")?;
 
     // Map DeepSeek field names → Atlas canonical names
     if config.num_experts == 0 && config.n_routed_experts > 0 {
