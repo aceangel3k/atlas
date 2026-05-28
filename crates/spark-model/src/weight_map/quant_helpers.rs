@@ -232,35 +232,55 @@ pub(crate) fn dequant_fp8_per_tensor_to_bf16(
     );
 
     let mut bf16_out = vec![0u8; total * 2];
-    for row in 0..n {
-        let scale_idx = if scale_count == 1 {
-            0
-        } else if scale_count == n {
-            row
-        } else if scale_count == k {
-            // Per-column: will be applied inside inner loop
-            0 // placeholder, overridden below
-        } else {
-            tracing::warn!(
-                "Scale count {scale_count} doesn't match n={n} or k={k} for {prefix}, using row % scale_count"
-            );
-            row % scale_count.max(1)
-        };
+    let block_n = if scale_count > 1 && n % scale_count == 0 { n / scale_count } else { 1 };
+    let block_k = if scale_count > 1 && k % scale_count == 0 { k / scale_count } else { 1 };
 
+    // Determine scale layout:
+    // 1. scale_count == 1 → per-tensor
+    // 2. scale_count == n → per-row
+    // 3. scale_count == k → per-column
+    // 4. scale_count == n / block_n for some block_n → block-per-row
+    // 5. scale_count == k / block_k for some block_k → block-per-col
+    let is_block_row = scale_count > 1 && n % scale_count == 0;
+    let is_block_col = scale_count > 1 && k % scale_count == 0;
+    let is_per_row = scale_count == n;
+    let is_per_col = scale_count == k;
+
+    if scale_count > 1 && !is_per_row && !is_per_col && !is_block_row && !is_block_col {
+        tracing::warn!(
+            "Scale count {scale_count} doesn't match n={n} or k={k} for {prefix}, using row % scale_count"
+        );
+    }
+
+    for row in 0..n {
         for col in 0..k {
-            let col_scale_idx = if scale_count == k { col } else { scale_idx };
+            let scale_idx = if scale_count == 1 {
+                0
+            } else if is_per_row {
+                row
+            } else if is_per_col {
+                col
+            } else if is_block_row {
+                row / block_n
+            } else if is_block_col {
+                col / block_k
+            } else {
+                // Fallback: modulo mapping
+                (row * k + col) % scale_count
+            };
+
             let scale_f32 = if scale_is_f32 {
                 let b = [
-                    scale_buf[col_scale_idx * 4],
-                    scale_buf[col_scale_idx * 4 + 1],
-                    scale_buf[col_scale_idx * 4 + 2],
-                    scale_buf[col_scale_idx * 4 + 3],
+                    scale_buf[scale_idx * 4],
+                    scale_buf[scale_idx * 4 + 1],
+                    scale_buf[scale_idx * 4 + 2],
+                    scale_buf[scale_idx * 4 + 3],
                 ];
                 f32::from_le_bytes(b)
             } else {
                 let b = [
-                    scale_buf[col_scale_idx * 2],
-                    scale_buf[col_scale_idx * 2 + 1],
+                    scale_buf[scale_idx * 2],
+                    scale_buf[scale_idx * 2 + 1],
                 ];
                 bf16_bytes_to_f32(b)
             };
