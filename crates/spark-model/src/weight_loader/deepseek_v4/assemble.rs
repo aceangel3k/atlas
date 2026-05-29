@@ -81,9 +81,27 @@ pub fn assemble_layer(
             experts.push(ExpertWeight::null());
         }
     }
+    // Shared expert: DeepSeek-V4 has n_shared_experts=1, always-on and UNGATED
+    // (reference MoE.forward does `y += shared_experts(x)` after the routed
+    // all-reduce). It is NOT EP-sharded — every rank loads the full shared
+    // expert and adds it once post-all-reduce (forward_prefill handles the
+    // EP-once blend; moe_batched_blend treats a NULL gate as sigmoid=1.0).
+    // The weights live under `ffn.shared_experts.{w1,w2,w3}` (NVFP4), same
+    // packing as the routed experts. Leaving this null caused the MoE prefill
+    // to dereference null gate/up/down pointers (CUDA illegal address).
+    let sep = format!("{p}.ffn.shared_experts");
+    let shared_expert = ExpertWeight {
+        gate_proj: quantized_v2(store, &format!("{sep}.w1"), gpu)
+            .with_context(|| "DeepSeek-V4 shared expert: w1")?,
+        up_proj: quantized_v2(store, &format!("{sep}.w3"), gpu)
+            .with_context(|| "DeepSeek-V4 shared expert: w3")?,
+        down_proj: quantized_v2(store, &format!("{sep}.w2"), gpu)
+            .with_context(|| "DeepSeek-V4 shared expert: w2")?,
+    };
+
     let moe_weights = MoeWeights {
         gate,
-        shared_expert: ExpertWeight::null(),
+        shared_expert,
         shared_expert_gate: DenseWeight { weight: DevicePtr::NULL },
         experts,
         router_pre_norm: None,
