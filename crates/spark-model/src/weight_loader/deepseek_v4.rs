@@ -69,12 +69,18 @@ impl ModelWeightLoader for DeepSeekV4WeightLoader {
     }
 
     fn load_lm_head(&self, store: &WeightStore, config: &ModelConfig) -> Result<DenseWeight> {
-        if store.contains("lm_head.weight") {
+        // DeepSeek-V4-Flash names the output projection `head.weight`
+        // (reference ParallelHead.weight), [vocab, hidden]. tie_word_embeddings
+        // is false, so it is a distinct tensor from embed.weight. RedHatAI
+        // re-quant keeps this name. Fall back to standard HF names, then tied.
+        if store.contains("head.weight") {
+            dense(store, "head.weight")
+        } else if store.contains("lm_head.weight") {
             dense(store, "lm_head.weight")
         } else if config.tie_word_embeddings {
             self.load_embedding(store, config)
         } else {
-            anyhow::bail!("DeepSeek-V4: lm_head not found")
+            anyhow::bail!("DeepSeek-V4: lm_head not found (tried head.weight, lm_head.weight)")
         }
     }
 
