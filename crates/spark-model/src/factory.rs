@@ -12,9 +12,9 @@ use spark_runtime::weights::WeightStore;
 
 use crate::mistral_loader::MistralWeightLoader;
 use crate::weight_loader::{
-    DflashConfig, Gemma4WeightLoader, MinimaxM2WeightLoader, ModelWeightLoader,
-    NemotronHWeightLoader, Qwen3VLWeightLoader, Qwen3WeightLoader, Qwen35DenseWeightLoader,
-    Qwen35WeightLoader,
+    DeepSeekV4WeightLoader, DflashConfig, Gemma4WeightLoader, MinimaxM2WeightLoader,
+    ModelWeightLoader, NemotronHWeightLoader, Qwen3VLWeightLoader, Qwen3WeightLoader,
+    Qwen35DenseWeightLoader, Qwen35WeightLoader,
 };
 
 /// DFlash speculative-decoding build arguments. `None` for non-DFlash runs;
@@ -79,9 +79,13 @@ pub fn loader_for_config(config: &ModelConfig) -> Result<Box<dyn ModelWeightLoad
         // MiniMax M2 family (M2.1 / M2.7) — full attention + 256-expert
         // sigmoid-routed MoE + 3-module MTP.
         "minimax_m2" => Ok(Box::new(MinimaxM2WeightLoader)),
+        // DeepSeek-V4 family (Flash, Pro) — MLA + MoE + CSA/HCA hybrid attention.
+        // Fallback: infrastructure scaffold; layer loading is stubbed pending
+        // kernel target bring-up.
+        "deepseek_v4" => Ok(Box::new(DeepSeekV4WeightLoader)),
         _ => bail!(
             "Unsupported model type: '{}' (normalized: '{}'). \
-             Supported: qwen3_next, qwen3_5_moe, qwen3_5, qwen3_6_moe, qwen3_vl_moe, nemotron_h, gemma4, mistral, minimax_m2",
+             Supported: qwen3_next, qwen3_5_moe, qwen3_5, qwen3_6_moe, qwen3_vl_moe, nemotron_h, gemma4, mistral, minimax_m2, deepseek_v4",
             config.model_type,
             normalized,
         ),
@@ -147,6 +151,9 @@ mod tests {
         assert!(loader_for_config(&config).is_ok());
 
         config.model_type = "nemotron_h".to_string();
+        assert!(loader_for_config(&config).is_ok());
+
+        config.model_type = "deepseek_v4".to_string();
         assert!(loader_for_config(&config).is_ok());
 
         config.model_type = "unsupported_model".to_string();

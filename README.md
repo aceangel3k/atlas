@@ -238,6 +238,7 @@ We have to walk before we can run. Today's Atlas is targeted at a single hardwar
 | MiniMax | MiniMax-M2.7 | `lukealonso/MiniMax-M2.7-NVFP4` | 229B / ~10B | Attention + 256-expert MoE + MTP |
 | Nemotron-H | Nemotron-3-Nano-30B-A3B | `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4` | 30B / 3B | Mamba-2 + attention + MoE |
 | Nemotron-H | Nemotron-3-Super-120B-A12B | `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4` | 120B / 12B | Mamba-2 + attention + MoE |
+| DeepSeek-V4 | DeepSeek-V4-Flash | `deepseek-ai/DeepSeek-V4-Flash` | 284B / 13B | MLA + MoE + CSA/HCA hybrid attention, EP=2 |
 
 This is a starting point, not a destination. The plug-and-play design above exists precisely so that AMD, Apple Silicon, Intel, and the next round of Blackwell parts can land here as community contributions, and so that the Llama 4s and DeepSeek V4s of next quarter slot in the same way the Qwens did this quarter. We did the hard part — bolting in the abstractions while bringing up the first twelve targets — so that adding the thirteenth is a weekend, not a quarter.
 
