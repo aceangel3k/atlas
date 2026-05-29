@@ -110,6 +110,17 @@ pub fn assemble_layer(
     let moe = MoeLayer::new(moe_weights, config.num_experts, gate_nvfp4, gpu, config)?;
 
     // ── MLA weights ──
+    // RedHatAI checkpoint: wkv_a may only contain kv_lora_rank rows (no rope).
+    // Try loading a separate rope tensor; if absent, allocate a zero buffer.
+    let wkv_a_rope = if let Ok(rope_w) = store.get(&format!("{lp}.attn.wkv_rope.weight")) {
+        DenseWeight { weight: rope_w.ptr }
+    } else {
+        let rope_bytes = config.qk_rope_head_dim * h * 2;
+        let rope_ptr = gpu.alloc(rope_bytes)?;
+        gpu.memset(rope_ptr, 0, rope_bytes)?;
+        DenseWeight { weight: rope_ptr }
+    };
+
     let mla = MlaWeights {
         wq_a,
         wq_a_nvfp4,
@@ -120,9 +131,7 @@ pub fn assemble_layer(
         wkv_a_nvfp4,
         wkv_b,
         kv_a_norm,
-        wkv_a_rope: DenseWeight {
-            weight: wkv_a.weight.offset(config.kv_lora_rank * h * 2),
-        },
+        wkv_a_rope,
         wkv_a_merged: DenseWeight {
             weight: wkv_a.weight,
         },
