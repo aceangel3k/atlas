@@ -41,34 +41,12 @@ pub fn load_all_layers(
         let q_a_norm = dense(store, &format!("{ap}.q_norm.weight"))?;
 
         let wkv_a = dense_auto(store, &format!("{ap}.wkv.weight"), gpu)?;
-        let wkv_a_shape = store.get(&format!("{ap}.wkv.weight"))?.shape.clone();
-        let wkv_a_n = wkv_a_shape[0];
-        let wkv_a_k = wkv_a_shape[1];
-        let wkv_a_nvfp4 = Some(quantize_to_nvfp4(
-            &wkv_a,
-            wkv_a_n,
-            wkv_a_k,
-            gpu,
-            absmax_k,
-            quantize_k,
-            stream,
-        )?);
         // RedHatAI re-quant: wo_a = kv_b_proj, wo_b = o_proj
         let wkv_b = dense_auto(store, &format!("{ap}.wo_a.weight"), gpu)?;
         let wkv_b_shape = store.get(&format!("{ap}.wo_a.weight"))?.shape.clone();
         let kv_a_norm = dense(store, &format!("{ap}.kv_norm.weight"))?;
 
         let o_dense = dense_auto(store, &format!("{ap}.wo_b.weight"), gpu)?;
-        let o_dense_shape = store.get(&format!("{ap}.wo_b.weight"))?.shape.clone();
-        let o_nvfp4 = Some(quantize_to_nvfp4(
-            &o_dense,
-            o_dense_shape[0],
-            o_dense_shape[1],
-            gpu,
-            absmax_k,
-            quantize_k,
-            stream,
-        )?);
 
         let wq_b_shape = store.get(&format!("{ap}.wq_b.weight"))?.shape.clone();
         let (w_uk_t, w_uv, wq_b_rope, w_uk_host) =
